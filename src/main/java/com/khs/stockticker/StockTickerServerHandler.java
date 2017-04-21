@@ -30,8 +30,10 @@ public class StockTickerServerHandler extends SimpleChannelInboundHandler<Object
    @Override
    protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
       if (msg instanceof FullHttpRequest) {
+         logger.info("got FullHttpRequest");
          this.handleHttpRequest(ctx, (FullHttpRequest)msg);
       } else if (msg instanceof WebSocketFrame) {
+         logger.info("got WebSocketFrame");
          this.handleWebSocketFrame(ctx, (WebSocketFrame)msg);
       }
    }

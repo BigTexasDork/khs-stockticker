@@ -2,6 +2,7 @@ package com.khs.stockticker;
 
 import com.eclipsesource.json.JsonArray;
 import com.eclipsesource.json.JsonObject;
+import com.eclipsesource.json.JsonValue;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.gson.Gson;
 import io.netty.channel.Channel;
@@ -23,6 +24,8 @@ import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.util.EntityUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -40,175 +43,158 @@ import java.util.concurrent.atomic.AtomicReference;
  * Created by jwb on 3/13/15.
  */
 public class StockTickerMessageHandler implements WebSocketMessageHandler {
-   private static final String STOCK_URL_START = "http://query.yahooapis.com/v1/public/yql?q=select%20*%20from%20yahoo.finance.quotes%20where%20symbol%20in%20(";
-   private static final String STOCK_URL_END = ")%0A%09%09&env=http%3A%2F%2Fdatatables.org%2Falltables.env&format=json";
-   
-   // Keep track of the tickers the user has asked for info about
-   private List<String> tickerSymbols = new CopyOnWriteArrayList<>();
+    private static final Logger logger = LoggerFactory.getLogger(StockTickerServerHandler.class);
 
-   // stateless JSON serializer/deserializer
-   private Gson gson = new Gson();
+    // Keep track of the tickers the user has asked for info about
+    private List<String> tickerSymbols = new CopyOnWriteArrayList<>();
 
-   private static final AtomicBoolean keepRunning = new AtomicBoolean(true);
+    // stateless JSON serializer/deserializer
+    private Gson gson = new Gson();
 
-   // Keep track of the current channel so we can talk directly to the client
-   private AtomicReference<Channel> channel = new AtomicReference();
+    private static final AtomicBoolean keepRunning = new AtomicBoolean(true);
 
-   // need an executor for the thread that will intermittently send data to the client
-   private ExecutorService executor = Executors.newSingleThreadExecutor(
-         new ThreadFactoryBuilder()
-               .setDaemon(true)
-               .setNameFormat("ticker-processor-%d")
-               .build()
-   );
+    // Keep track of the current channel so we can talk directly to the client
+    private AtomicReference<Channel> channel = new AtomicReference();
 
-   public StockTickerMessageHandler() {
-      SendResultsCallable toClientCallable = new SendResultsCallable();
-      FutureTask<String> toClientPc = new FutureTask<>(toClientCallable);
-      executor.execute(toClientPc);
-   }
+    // need an executor for the thread that will intermittently send data to the client
+    private ExecutorService executor = Executors.newSingleThreadExecutor(
+            new ThreadFactoryBuilder()
+                    .setDaemon(true)
+                    .setNameFormat("ticker-processor-%d")
+                    .build()
+    );
 
-   public String handleMessage(ChannelHandlerContext ctx, String frameText) {
-      this.channel.set(ctx.channel());
-      TickerResponse tickerResponse = new TickerResponse();
-      TickerRequest tickerRequest = gson.fromJson(frameText, TickerRequest.class);
+    public StockTickerMessageHandler() {
+        SendResultsCallable toClientCallable = new SendResultsCallable();
+        FutureTask<String> toClientPc = new FutureTask<>(toClientCallable);
+        executor.execute(toClientPc);
+    }
 
-      if (tickerRequest.getCommand() != null) {
-         if ("add".equals(tickerRequest.getCommand())) {
-            tickerSymbols.add(tickerRequest.getTickerSymbol());
-            tickerResponse.setResult("success");
-         } else if ("remove".equals(tickerRequest.getCommand())) {
-            tickerSymbols.remove(tickerRequest.getTickerSymbol());
-            tickerResponse.setResult("success");
-         } else {
+    public String handleMessage(ChannelHandlerContext ctx, String frameText) {
+        this.channel.set(ctx.channel());
+        TickerResponse tickerResponse = new TickerResponse();
+        TickerRequest tickerRequest = gson.fromJson(frameText, TickerRequest.class);
+
+        if (tickerRequest.getCommand() != null) {
+            if ("add".equals(tickerRequest.getCommand())) {
+                tickerSymbols.add(tickerRequest.getTickerSymbol());
+                tickerResponse.setResult("success");
+            } else if ("remove".equals(tickerRequest.getCommand())) {
+                tickerSymbols.remove(tickerRequest.getTickerSymbol());
+                tickerResponse.setResult("success");
+            } else {
+                tickerResponse.setResult("Failed. Command not recognized.");
+            }
+        } else {
             tickerResponse.setResult("Failed. Command not recognized.");
-         }
-      } else {
-         tickerResponse.setResult("Failed. Command not recognized.");
-      }
+        }
 
-      String response = gson.toJson(tickerResponse);
-      return response;
-   }
+        String response = gson.toJson(tickerResponse);
+        return response;
+    }
 
-   /**
-    * This class runs as a thread, and waits for messages to arrive in its queue that are to be sent back to the client.
-    *
-    * @author jwb
-    */
-   class SendResultsCallable implements Callable<String> {
-      // one per callable as it is stateless, but not thread safe
-      private Gson gson = new Gson();
+    /**
+     * This class runs as a thread, and waits for messages to arrive in its queue that are to be sent back to the client.
+     *
+     * @author jwb
+     */
+    class SendResultsCallable implements Callable<String> {
+        // one per callable as it is stateless, but not thread safe
+        private Gson gson = new Gson();
 
-      public SendResultsCallable() {
-      }
+        public SendResultsCallable() {
+        }
 
-      @Override
-      public String call() throws Exception {
-         // keep going until all messages are sent
-         while (keepRunning.get()) {
-            if (tickerSymbols.size() > 0) {
-               TickerResponse tickerResponse = new TickerResponse();
-               tickerResponse.setResult("success");
-               tickerResponse.setTickerData(getPricesForSymbols(tickerSymbols));
+        @Override
+        public String call() throws Exception {
+            // keep going until all messages are sent
+            while (keepRunning.get()) {
+                if (tickerSymbols.size() > 0) {
+                    TickerResponse tickerResponse = new TickerResponse();
+                    tickerResponse.setResult("success");
+                    tickerResponse.setTickerData(getPricesForSymbols(tickerSymbols));
 
-               String response = gson.toJson(tickerResponse);
+                    String response = gson.toJson(tickerResponse);
 
-               // send the client an update
-               channel.get().writeAndFlush(new TextWebSocketFrame(response));
+                    // send the client an update
+                    channel.get().writeAndFlush(new TextWebSocketFrame(response));
+                }
+
+                // only try to send back to client every 2 seconds so it isn't overwhelmed with messages
+                Thread.sleep(2000L);
             }
 
-            // only try to send back to client every 2 seconds so it isn't overwhelmed with messages
-            Thread.sleep(2000L);
-         }
+            return "done";
+        }
+    }
 
-         return "done";
-      }
-   }
+    private Map<String, String> getPricesForSymbols(List<String> symbols) {
+        Map<String, String> response = new HashMap<>();
+        String url = "http://finance.google.com/finance/info?client=ig&q=NASDAQ%3A";
+        url += String.join(",", symbols);
+        logger.info(url);
 
-   private Map<String, String> getPricesForSymbols(List<String> symbols) {
-      Map<String, String> response = new HashMap<>();
-      String url = STOCK_URL_START;
-      boolean first = true;
-      for (String symbol : symbols) {
-         if (first) {
-            first = false;
-         } else {
-            url += "%2C";
-         }
-         url += "%22" + symbol + "%22";
-      }
-      
-      url += STOCK_URL_END;
+        CloseableHttpClient httpClient = HttpClients.custom()
+                .addInterceptorFirst((HttpRequestInterceptor) (request, context) -> {
+                    if (!request.containsHeader("Accept-Encoding")) {
+                        request.addHeader("Accept-Encoding", "gzip");
+                    }
 
-      CloseableHttpClient httpClient = HttpClients.custom()
-         .addInterceptorFirst(new HttpRequestInterceptor() {
+                }).addInterceptorFirst(new HttpResponseInterceptor() {
 
-            public void process(
-                  final HttpRequest request,
-                  final HttpContext context) throws HttpException, IOException {
-               if (!request.containsHeader("Accept-Encoding")) {
-                  request.addHeader("Accept-Encoding", "gzip");
-               }
-
-            }
-         }).addInterceptorFirst(new HttpResponseInterceptor() {
-
-               public void process(
-                     final HttpResponse response,
-                     final HttpContext context) throws HttpException, IOException {
-                  HttpEntity entity = response.getEntity();
-                  if (entity != null) {
-                     Header ceheader = entity.getContentEncoding();
-                     if (ceheader != null) {
-                        HeaderElement[] codecs = ceheader.getElements();
-                        for (int i = 0; i < codecs.length; i++) {
-                           if (codecs[i].getName().equalsIgnoreCase("gzip")) {
-                              response.setEntity(
-                                    new GzipDecompressingEntity(response.getEntity()));
-                              return;
-                           }
+                    public void process(
+                            final HttpResponse response,
+                            final HttpContext context) throws HttpException, IOException {
+                        HttpEntity entity = response.getEntity();
+                        if (entity != null) {
+                            Header ceheader = entity.getContentEncoding();
+                            if (ceheader != null) {
+                                HeaderElement[] codecs = ceheader.getElements();
+                                for (int i = 0; i < codecs.length; i++) {
+                                    if (codecs[i].getName().equalsIgnoreCase("gzip")) {
+                                        response.setEntity(
+                                                new GzipDecompressingEntity(response.getEntity()));
+                                        return;
+                                    }
+                                }
+                            }
                         }
-                     }
-                  }
-               }
-            }).build();
+                    }
+                }).build();
 
-      try {
-         HttpUriRequest query = RequestBuilder.get()
-             .setUri(url)
-             .build();
-         CloseableHttpResponse queryResponse = httpClient.execute(query);
-         try {
-            HttpEntity entity = queryResponse.getEntity();
-            if (entity != null) {
-               String data = EntityUtils.toString(entity);
-               JsonObject jsonObject = JsonObject.readFrom(data);
-               jsonObject = jsonObject.get("query").asObject();
-               jsonObject = jsonObject.get("results").asObject();
-               if (jsonObject.get("quote").isArray()) {
-                  JsonArray jsonArray = jsonObject.get("quote").asArray();
-                  for (int i = 0; i < jsonArray.size(); i++) {
-                     jsonObject = jsonArray.get(i).asObject();
-                     String symbol = jsonObject.get("Symbol").asString();
-                     String price = jsonObject.get("LastTradePriceOnly").asString();
-                     response.put(symbol, price);
-                  }
-               } else {
-                  jsonObject = jsonObject.get("quote").asObject();
-                  String symbol = jsonObject.get("Symbol").asString();
-                  String price = jsonObject.get("LastTradePriceOnly").asString();
-                  response.put(symbol, price);
-               }
+        try {
+            HttpUriRequest query = RequestBuilder.get()
+                    .setUri(url)
+                    .build();
+            CloseableHttpResponse queryResponse = httpClient.execute(query);
+            try {
+                HttpEntity entity = queryResponse.getEntity();
+                if (entity != null) {
+                    String data = EntityUtils.toString(entity);
+                    // google finance api response starts with a blank comment
+                    data = data.replace("//", "");
+                    JsonArray quotes = JsonArray.readFrom(data);
+                    if (quotes.isArray()) {
+                        logger.info("JSON ARRAY");
+                    }
+                    for (JsonValue quote: quotes) {
+                        String symbol = quote.asObject().get("t").asString();
+                        String last = quote.asObject().get("l").asString();
+                        response.put(symbol, last);
+                    }
+                }
+            } finally {
+                queryResponse.close();
             }
-         } finally {
-            queryResponse.close();
-         }
-      } catch (Exception e) {
-      } finally {
-         try {httpClient.close();} catch (Exception e) {}
-      }
+        } catch (Exception e) {
+            logger.info(e.getMessage());
+        } finally {
+            try {
+                httpClient.close();
+            } catch (Exception e) {
+            }
+        }
 
-      return response;
-   }
+        return response;
+    }
 }
