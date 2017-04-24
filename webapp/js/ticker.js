@@ -22,6 +22,12 @@ function testWebSocket() {
 	};
 }
 
+function clearArea() {
+    while (output.firstChild) {
+        output.removeChild(output.firstChild);
+    }
+}
+
 function onOpen(evt) {
 	writeToScreen("CONNECTED");
 	doSend('{"command":"add", "tickerSymbol":"GOOG"}');
@@ -58,10 +64,12 @@ function sendRemove(symbol) {
 }
 
 function writeToScreen(message) {
+    var dt = new Date(new Date().getTime()).toLocaleTimeString();
 	var pre = document.createElement("p");
 	pre.style.wordWrap = "break-word";
-	pre.innerHTML = message;
-	output.appendChild(pre);
+	pre.innerHTML = dt + " - " + message;
+	//output.appendChild(pre);
+	output.insertBefore( pre, output.firstChild);
 }
 
 window.addEventListener("load", init, false);

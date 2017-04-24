@@ -78,10 +78,10 @@ public class StockTickerMessageHandler implements WebSocketMessageHandler {
         if (tickerRequest.getCommand() != null) {
             if ("add".equals(tickerRequest.getCommand())) {
                 tickerSymbols.add(tickerRequest.getTickerSymbol());
-                tickerResponse.setResult("success");
+                tickerResponse.setResult("success - added: " + tickerRequest.getTickerSymbol());
             } else if ("remove".equals(tickerRequest.getCommand())) {
                 tickerSymbols.remove(tickerRequest.getTickerSymbol());
-                tickerResponse.setResult("success");
+                tickerResponse.setResult("success - removed: " + tickerRequest.getTickerSymbol());
             } else {
                 tickerResponse.setResult("Failed. Command not recognized.");
             }
@@ -134,33 +134,7 @@ public class StockTickerMessageHandler implements WebSocketMessageHandler {
         url += String.join(",", symbols);
         logger.info(url);
 
-        CloseableHttpClient httpClient = HttpClients.custom()
-                .addInterceptorFirst((HttpRequestInterceptor) (request, context) -> {
-                    if (!request.containsHeader("Accept-Encoding")) {
-                        request.addHeader("Accept-Encoding", "gzip");
-                    }
-
-                }).addInterceptorFirst(new HttpResponseInterceptor() {
-
-                    public void process(
-                            final HttpResponse response,
-                            final HttpContext context) throws HttpException, IOException {
-                        HttpEntity entity = response.getEntity();
-                        if (entity != null) {
-                            Header ceheader = entity.getContentEncoding();
-                            if (ceheader != null) {
-                                HeaderElement[] codecs = ceheader.getElements();
-                                for (int i = 0; i < codecs.length; i++) {
-                                    if (codecs[i].getName().equalsIgnoreCase("gzip")) {
-                                        response.setEntity(
-                                                new GzipDecompressingEntity(response.getEntity()));
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }).build();
+        CloseableHttpClient httpClient = HttpClients.createDefault();
 
         try {
             HttpUriRequest query = RequestBuilder.get()
